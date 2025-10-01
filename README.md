@@ -43,7 +43,7 @@ source("scripts/00_setup.R")
 To capture the exact environment used in your run:
 
 ```r
-source("scripts/05_reproducibility_checks.R")
+source("scripts/07_reproducibility_checks.R")
 # Produces outputs/sessionInfo.txt
 ```
 
@@ -57,11 +57,13 @@ source("scripts/05_reproducibility_checks.R")
 
 ```bash
 Rscript scripts/00_setup.R
-Rscript scripts/01_data_ingest_and_clean.R
-Rscript scripts/02_compute_fi_fq.R
-Rscript scripts/03_model_negative_binomial.R
-Rscript scripts/04_figures_and_tables.R
-Rscript scripts/05_reproducibility_checks.R
+Rscript scripts/01_data_cleaning.R
+Rscript scripts/02_sample_size.R
+Rscript scripts/03_summary_tables.R
+Rscript scripts/04_Fragility_Index.R
+Rscript scripts/05_analysis.R
+Rscript scripts/06_figures.R
+Rscript scripts/07_reproducibility_checks.R
 ```
 
 Key outputs:
