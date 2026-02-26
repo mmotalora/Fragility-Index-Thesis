@@ -1,253 +1,305 @@
-### Ngeative Binomial regression 
+# =====================================================================
+# 05_analysis.R
+# Negative binomial regression (FI as outcome)
+#
+# FINAL DECISIONS:
+# - NO pval_significance * sample_size interaction
+# - rct_aim.factor removed (collinearity with rct_type.factor)
+# - Use dichotomous blinding and concealment only
+# - Collapse crossover into "Other" ONLY for regression (c_design_reg.factor)
+# - Fix LTFU and moved (row-wise)
+# - Log complete-case losses due to drop_na()
+# - Save datasets + model objects for reproducibility
+# =====================================================================
+
+source("00_utils.R")
+
+require_pkgs(c(
+  "MASS", "car", "MuMIn", "dplyr", "corrplot", "vcd", "tidyr",
+  "psych", "forcats", "readr"
+))
 
 library(MASS)
 library(car)
 library(MuMIn)
-library(COUNT)
 library(dplyr)
 library(corrplot)
 library(vcd)
 library(tidyr)
-install.packages("psych")
 library(psych)
+library(forcats)
+library(readr)
 
-#Preparing data set
-binomdat <- fi_set %>% 
+DIR_OUTPUTS <- if (exists("DIR_OUTPUTS")) DIR_OUTPUTS else "outputs"
+ensure_dir(DIR_OUTPUTS)
+
+# ---------------------------------------------------------------------
+# Load FI dataset (fi_set) created in 04_compute_fragility.R
+# ---------------------------------------------------------------------
+if (!exists("fi_set")) {
+  fi_path <- file.path(DIR_OUTPUTS, "fi_set_2026-02.rds")
+  if (!file.exists(fi_path)) stop("fi_set not found. Run 04_compute_fragility.R first.", call. = FALSE)
+  fi_set <- readRDS(fi_path)
+}
+
+# ---------------------------------------------------------------------
+# Prepare dataset for modeling
+# ---------------------------------------------------------------------
+binomdat <- fi_set %>%
   mutate(across(where(is.factor), droplevels))
 
-## Modifying the variable type of blinding to dichotomous (y/n)
-binomdat$rct_blind_d.factor <- factor(binomdat$rct_blind.factor, 
-                                      levels = c("Single blind", "Double blind", "Triple blind", "Unblinded"),
-                                      labels = c("Yes", "Yes", "Yes", "No"))
+# -------------------------
+# Dichotomous BLINDING (Yes/No)
+# -------------------------
+binomdat <- binomdat %>%
+  mutate(
+    rct_blind_d.factor = factor(
+      rct_blind.factor,
+      levels = c("Single blind", "Double blind", "Triple blind", "Unblinded"),
+      labels = c("Yes", "Yes", "Yes", "No")
+    )
+  )
 
-## Modifying the variable type of concealment 
-binomdat$rct_conceal_d.factor <- factor(binomdat$rct_conceal.factor, 
-                                        levels = c("Sequentially numbered sealed/opaque envelopes", 
-                                                   "Sequentially numbered containers", 
-                                                   "Pharmacy controlled allocation", 
-                                                   "Central allocation (site remote from trial location)", 
-                                                   "Other", 
-                                                   "Unclear"),
-                                        labels = c("Yes", "Yes", "Yes", "Yes", "Yes", "Unclear"))
+# -------------------------
+# Dichotomous CONCEALMENT (Yes vs Unclear)
+# -------------------------
+binomdat <- binomdat %>%
+  mutate(
+    rct_conceal_d.factor = factor(
+      rct_conceal.factor,
+      levels = c(
+        "Sequentially numbered sealed/opaque envelopes",
+        "Sequentially numbered containers",
+        "Pharmacy controlled allocation",
+        "Central allocation (site remote from trial location)",
+        "Other",
+        "Unclear"
+      ),
+      labels = c("Yes", "Yes", "Yes", "Yes", "Yes", "Unclear")
+    )
+  )
 
-## Modifying the variable p value 
-binomdat$pval_significance <- ifelse(binomdat$pval < 0.05, "Significant", 
-                                     "Non-significant")
-binomdat$pval_significance <- as.factor(binomdat$pval_significance)
+# -------------------------
+# P-value significance
+# -------------------------
+binomdat <- binomdat %>%
+  mutate(
+    pval_significance = factor(
+      ifelse(pval < 0.05, "Significant", "Non-significant"),
+      levels = c("Non-significant", "Significant")
+    )
+  )
 
+# -------------------------
+# Correct row-wise LTFU and moved using your helper
+# -------------------------
+binomdat <- binomdat %>%
+  mutate(
+    ltfu  = row_sum2(c_missing, i_missing),
+    moved = row_sum2(n_movedi, n_movedc)
+  )
 
-## Creating the variable lost-to-follow (ltfu) up and patients moved from group (moved)
-binomdat <- binomdat %>% mutate(ltfu = sum(c_missing, i_missing),
-                                moved = sum(n_movedi, n_movedc))
+# -------------------------
+# Collapse crossover ONLY for regression
+# Keep original c_design.factor unchanged for Table 1
+# -------------------------
+binomdat <- binomdat %>%
+  mutate(
+    c_design_reg.factor = forcats::fct_collapse(
+      c_design.factor,
+      Other = c("Other", "Crossover")
+    )
+  )
 
-no.na.data <- binomdat %>% 
-  select(-report_id, -study_year, -included, -i_events, -c_events, 
-       -i_total, -c_total, -c_missing, -i_missing, -n_movedi, -n_movedc, 
-       -FI)
+# ---------------------------------------------------------------------
+# Build complete-case dataset used for regression + diagnostics
+# ---------------------------------------------------------------------
+n_before <- nrow(binomdat)
 
+no.na.data <- binomdat %>%
+  dplyr::select(
+    dplyr::any_of("record_id"),
+    fi_each, fq, pval, pval_significance,
+    study_year, sample_size, ltfu, moved,
+    c_participants.factor,
+    c_design_reg.factor,
+    rct_type.factor,
+    i_type.factor,
+    u_allocation.factor,
+    rct_blind_d.factor,
+    rct_conceal_d.factor,
+    rct_centers.factor,
+    ethic.factor,
+    funding.factor,
+    d_share.factor,
+    miss_data.factor,
+    sample_calc.factor
+  ) %>%
+  tidyr::drop_na()
 
-summary(binomdat)
+n_after <- nrow(no.na.data)
 
+writeLines(
+  c(
+    "Complete-case selection (05_analysis.R)",
+    sprintf("Rows in binomdat before drop_na(): %d", n_before),
+    sprintf("Rows in no.na.data after drop_na(): %d", n_after),
+    sprintf("Rows excluded due to missingness: %d", n_before - n_after),
+    sprintf("Date/time: %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
+  ),
+  con = file.path(DIR_OUTPUTS, "complete_case_flow_2026-02.txt")
+)
 
-tab7 <- table1(~ study_year + c_participants.factor + c_design.factor + 
-                 rct_aim.factor + rct_type.factor + u_allocation.factor + 
-                 rct_blind_d.factor + rct_conceal_d.factor + rct_centers.factor + 
-                 ethic.factor + funding.factor + d_share.factor + sample_size + ltfu + moved +
-                 pval_significance| i_type.factor, 
-               data=binomdat)
-as.data.frame(tab7)
+saveRDS(binomdat,   file.path(DIR_OUTPUTS, "binomdat.rds"))
+saveRDS(no.na.data, file.path(DIR_OUTPUTS, "no_na_data.rds"))
 
-
-## Checking for correlation for continuous variables
-
-continuous_vars <- no.na.data[, c("sample_size", "pval", "ltfu", "moved")]
+# ---------------------------------------------------------------------
+# Correlation checks (continuous)
+# ---------------------------------------------------------------------
+continuous_vars <- no.na.data %>%
+  dplyr::select(sample_size, pval, ltfu, moved)
 
 correlation_matrix <- cor(continuous_vars, use = "complete.obs")
-
+png(file.path(DIR_OUTPUTS, "corrplot_continuous_2026-02.png"), width = 1600, height = 1200, res = 200)
 corrplot(correlation_matrix, method = "circle")
+dev.off()
 
-#Moderate correlation between sample size, ltfu, and moved.
-#Low correlation between pval, ltfu, and moved
-
-
-# Checking for correlation for categorical variables
-#Cramér's V for all pairs of categorical variables
+# ---------------------------------------------------------------------
+# Correlation checks (categorical) using Cramér's V
+# ---------------------------------------------------------------------
 cramers_v_matrix <- function(data) {
-  cat_vars <- data[, sapply(data, is.factor)] 
+  cat_vars <- data[, sapply(data, is.factor), drop = FALSE]
   var_names <- colnames(cat_vars)
   n <- length(var_names)
   
-
-  cramers_v_matrix <- matrix(NA, nrow = n, ncol = n, dimnames = list(var_names, var_names))
+  out <- matrix(NA, nrow = n, ncol = n, dimnames = list(var_names, var_names))
   
-  for (i in 1:(n-1)) {
-    for (j in (i+1):n) {
-      tbl <- table(cat_vars[[i]], cat_vars[[j]])  
-      if (min(dim(tbl)) > 1) {  
-        cramers_v_matrix[i, j] <- assocstats(tbl)$cramer
-        cramers_v_matrix[j, i] <- cramers_v_matrix[i, j]
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tbl <- table(cat_vars[[i]], cat_vars[[j]])
+      if (min(dim(tbl)) > 1) {
+        out[i, j] <- vcd::assocstats(tbl)$cramer
+        out[j, i] <- out[i, j]
       }
     }
   }
-  
-  return(cramers_v_matrix)
+  out
 }
 
-categorical_vars <- no.na.data %>% 
-  select(-record_id, -sample_size, -ltfu, -moved, -pval, -fi_each, -fq)
+categorical_vars <- no.na.data %>%
+  dplyr::select(where(is.factor))  # <- your preferred approach
 
 cat_correlation_matrix <- cramers_v_matrix(categorical_vars)
 
+png(file.path(DIR_OUTPUTS, "corrplot_categorical_cramersV_2026-02.png"), width = 1800, height = 1600, res = 200)
 corrplot(cat_correlation_matrix, method = "circle", na.label = "NA")
+dev.off()
 
-###Strong correlation between: rct_aim and rct_type (0.84)
-## Moderate correlation between: 
-# c_participants and rct_type 
-# c_participants and rct_aim
-# c_participants and funding
-# rct_type and d_share 
-# rct_aim and d_share
-# rct_type and funding
-# i_type and rct_blind_d
-# rct_conceal and rct_centers
+# ---------------------------------------------------------------------
+# Optional ANOVA checks (descriptive)
+# ---------------------------------------------------------------------
+anova_checks <- list(
+  sample_size_by_participants = summary(aov(sample_size ~ c_participants.factor, data = no.na.data)),
+  sample_size_by_rct_type     = summary(aov(sample_size ~ rct_type.factor, data = no.na.data)),
+  sample_size_by_i_type       = summary(aov(sample_size ~ i_type.factor, data = no.na.data)),
+  sample_size_by_centers      = summary(aov(sample_size ~ rct_centers.factor, data = no.na.data))
+)
 
+sink(file.path(DIR_OUTPUTS, "anova_checks_2026-02.txt"))
+print(anova_checks)
+sink()
 
-# Correlation between categorical and continuous variables
-anova_result <- aov(sample_size ~ c_participants.factor, data = no.na.data)
-summary(anova_result)
+# ---------------------------------------------------------------------
+# Univariate negative binomial models (updated set)
+# ---------------------------------------------------------------------
+glm1  <- glm.nb(fi_each ~ study_year, data = no.na.data)
+glm2  <- glm.nb(fi_each ~ c_participants.factor, data = no.na.data)
+glm3  <- glm.nb(fi_each ~ c_design_reg.factor, data = no.na.data)
+glm5  <- glm.nb(fi_each ~ rct_type.factor, data = no.na.data)
+glm6  <- glm.nb(fi_each ~ i_type.factor, data = no.na.data)
+glm8  <- glm.nb(fi_each ~ rct_blind_d.factor, data = no.na.data)
+glm10 <- glm.nb(fi_each ~ rct_conceal_d.factor, data = no.na.data)
+glm11 <- glm.nb(fi_each ~ rct_centers.factor, data = no.na.data)
+glm12 <- glm.nb(fi_each ~ ethic.factor, data = no.na.data)
+glm13 <- glm.nb(fi_each ~ funding.factor, data = no.na.data)
+glm14 <- glm.nb(fi_each ~ d_share.factor, data = no.na.data)
+glm15 <- glm.nb(fi_each ~ pval, data = no.na.data)
+glm16 <- glm.nb(fi_each ~ pval_significance, data = no.na.data)
+glm17 <- glm.nb(fi_each ~ ltfu, data = no.na.data)
+glm18 <- glm.nb(fi_each ~ moved, data = no.na.data)
+glm19 <- glm.nb(fi_each ~ sample_size, data = no.na.data)
 
-anova_result <- aov(sample_size ~ rct_type.factor, data = no.na.data)
-summary(anova_result)
+univ_summaries <- list(
+  glm1  = capture.output(summary(glm1)),
+  glm2  = capture.output(summary(glm2)),
+  glm3  = capture.output(summary(glm3)),
+  glm5  = capture.output(summary(glm5)),
+  glm6  = capture.output(summary(glm6)),
+  glm8  = capture.output(summary(glm8)),
+  glm10 = capture.output(summary(glm10)),
+  glm11 = capture.output(summary(glm11)),
+  glm12 = capture.output(summary(glm12)),
+  glm13 = capture.output(summary(glm13)),
+  glm14 = capture.output(summary(glm14)),
+  glm15 = capture.output(summary(glm15)),
+  glm16 = capture.output(summary(glm16)),
+  glm17 = capture.output(summary(glm17)),
+  glm18 = capture.output(summary(glm18)),
+  glm19 = capture.output(summary(glm19))
+)
 
-anova_result <- aov(sample_size ~ i_type.factor, data = no.na.data)
-summary(anova_result)
+writeLines(
+  unlist(Map(function(nm, x) c(paste0("\n==== ", nm, " ====\n"), x),
+             names(univ_summaries), univ_summaries)),
+  con = file.path(DIR_OUTPUTS, "univariate_nb_models_2026-02.txt")
+)
 
-anova_result <- aov(sample_size ~ rct_centers.factor, data = no.na.data)
-summary(anova_result) #### as expected there is a correlation between the sample size and the number of centers
+# ---------------------------------------------------------------------
+# Final multivariable model (NO interaction)
+# ---------------------------------------------------------------------
+final_model <- MASS::glm.nb(
+  fi_each ~ c_participants.factor +
+    c_design_reg.factor +
+    rct_type.factor +
+    i_type.factor +
+    rct_blind_d.factor +
+    rct_conceal_d.factor +
+    rct_centers.factor +
+    ethic.factor +
+    funding.factor +
+    d_share.factor +
+    pval_significance +
+    sample_size +
+    ltfu + moved,
+  data = no.na.data
+)
 
-## The variable rct_aim was removed due to strong correlation with rct_type. For the purposes of the analysis rct_type provided more information
+saveRDS(final_model, file.path(DIR_OUTPUTS, "final_nb_model_2026-02.rds"))
+writeLines(capture.output(summary(final_model)),
+           file.path(DIR_OUTPUTS, "final_nb_model_summary_2026-02.txt"))
 
+# ---------------------------------------------------------------------
+# VIF diagnostic (approximate via lm on same formula)
+# ---------------------------------------------------------------------
+vif_lm <- lm(
+  fi_each ~ c_participants.factor +
+    c_design_reg.factor +
+    rct_type.factor +
+    i_type.factor +
+    rct_blind_d.factor +
+    rct_conceal_d.factor +
+    rct_centers.factor +
+    ethic.factor +
+    funding.factor +
+    d_share.factor +
+    pval_significance +
+    sample_size +
+    ltfu + moved,
+  data = no.na.data
+)
 
+vif_vals <- car::vif(vif_lm)
+writeLines(capture.output(vif_vals),
+           file.path(DIR_OUTPUTS, "vif_diagnostic_2026-02.txt"))
 
-# Descriptive statistics
-
-summary(no.na.data)
-
-descriptive <- no.na.data %>%
-  select(-record_id, -rct_type.factor, -u_allocation.factor) %>% 
-  mutate(fi_each_percentile = cut(fi_each, 
-                                  breaks = quantile(fi_each, probs = seq(0, 1, 0.25), na.rm = TRUE), 
-                                  include.lowest = TRUE, 
-                                  labels = c("Q1", "Q2", "Q3", "Q4")))
-
-numeric_stats <- descriptive %>%
-  group_by(fi_each_percentile) %>%
-  summarise(across(where(is.numeric), 
-                   list(mean = ~mean(., na.rm = TRUE),
-                        sd = ~sd(., na.rm = TRUE),
-                        median = ~median(., na.rm = TRUE),
-                        min = ~min(., na.rm = TRUE),
-                        max = ~max(., na.rm = TRUE)),
-                   .names = "{col}_{fn}")) 
-
-factor_stats <- descriptive %>%
-  group_by(fi_each_percentile) %>%
-  summarise(across(where(is.factor), 
-                   ~list(table(.) %>% prop.table() %>% round(2)),
-                   .names = "{col}_freq"))
-
-# Step 1: Evaluating each variable
-
-glm1 <- glm.nb(fi_each ~ study_year, 
-               data = binomdat)
-
-summary(glm1) ## variable study_year no significant p value 0.291
-
-glm2 <- glm.nb(fi_each ~ c_participants.factor, 
-               data = binomdat)
-
-summary(glm2) ## Only the category regional is significantly associated. Lower FI compared to reference category (obstetric)
-
-glm3 <- glm.nb(fi_each ~ c_design.factor, 
-               data = binomdat)
-
-summary(glm3) ## Only the category 2x2 factorial is significantly associated. Higher FI 
-
-glm4 <- glm.nb(fi_each ~ rct_aim.factor, 
-               data = binomdat)
-
-summary(glm4) ## Only the category Equivalence is significantly associated with lower FI
-
-glm5 <- glm.nb(fi_each ~ rct_type.factor, 
-               data = binomdat)
-
-summary(glm5) ### Only the category Equivalence is significantly associated with lower FI
-
-glm6 <- glm.nb(fi_each ~ i_type.factor, 
-               data = binomdat)
-
-summary(glm6) ## The variable type of intervention is significantly associated with lower FI for non-drug related interventions
-
-glm7 <- glm.nb(fi_each ~ rct_blind.factor, 
-               data = binomdat)
-
-summary(glm7) ## Only the category double_blind  is significantly associated with higher FI
-
-
-glm8 <- glm.nb(fi_each ~ rct_blind_d.factor, 
-               data = binomdat)
-
-summary(glm8) # non-blinded studies have a significantly lower expected number of events compared to blinded studies
-
-
-glm9 <- glm.nb(fi_each ~ rct_conceal.factor, 
-               data = binomdat)
-
-summary(glm9) # only the categories other type of concealment, unclear concealment and central allocation concealment are associated
-
-
-glm10 <- glm.nb(fi_each ~ rct_conceal_d.factor, 
-               data = binomdat)
-
-summary(glm10) #studies with unclear/no concealment have a significantly lower 
-#expected number of events compared to those with proper concealment
-
-glm11 <- glm.nb(fi_each ~ rct_centers.factor, 
-               data = binomdat) 
-summary(glm11) #Multicenter studies are associated with a higher count of FI 
-
-glm12 <- glm.nb(fi_each ~ ethic.factor, 
-                data = binomdat)
-summary(glm12) #No association
-
-glm13 <- glm.nb(fi_each ~ funding.factor, 
-                data = binomdat)
-summary(glm13) #Non-industry funded studies are associated with a higher count of FI
-
-glm14 <- glm.nb(fi_each ~ d_share.factor, 
-                data = binomdat)
-summary(glm14) #No association
-
-glm15 <- glm.nb(fi_each ~ pval, 
-                data = binomdat)
-summary(glm15) #No association
-
-glm16 <- glm.nb(fi_each ~ pval_significance, 
-                data = binomdat)
-summary(glm16)# Studies with a significant pvalue are associated with a higher count of FI 
-
-glm17 <- glm.nb(fi_each ~ ltfu, 
-                data = binomdat)
-summary(glm17) # associated with a higher count of FI 
-
-glm18 <- glm.nb(fi_each ~ moved, 
-                data = binomdat)
-summary(glm18) # associated with a higher count of FI 
-
-glm19 <- glm.nb(fi_each ~ sample_size, 
-                data = binomdat)
-summary(glm19) # associated with a higher count of FI 
-
-glm19 <- glm.nb(fi_each ~ sample_size, 
-                data = binomdat)
-summary(glm19)
+message("05_analysis.R complete: no interaction term; complete-case loss logged; model + datasets saved to outputs/.")
