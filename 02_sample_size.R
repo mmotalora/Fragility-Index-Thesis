@@ -1,42 +1,77 @@
-install.packages("sampler")
-library(sampler)
+require_pkgs(c("readxl", "dplyr", "writexl"))
 
-library(tidyverse)
-
-library(readxl)
-
-library(dplyr)
+DIR_OUTPUTS <- if (exists("DIR_OUTPUTS")) DIR_OUTPUTS else "outputs"
+ensure_dir(DIR_OUTPUTS)
 
 
-extraction_log <- read_excel("extraction_log.xlsx")
-View(extraction_log)
+SAMPLE_COHORT_FILE <- "sample_list.xlsx"  # <-- put this file in your project folder
 
-citation('sampler')
+if (!file.exists(SAMPLE_COHORT_FILE)) {
+  stop(
+    paste(
+      "Cannot find:", SAMPLE_COHORT_FILE,
+      "\nPlace it in your project directory (same folder you run 00_run_all.R from),",
+      "\nor change SAMPLE_COHORT_FILE to the correct filename."
+    ),
+    call. = FALSE
+  )
+}
 
-extraction_log <- extraction_log %>% 
-  mutate(group.f = factor(group, levels = c("1", "2", "3", "4", "5", "6"), 
-                          labels = c("general", "pediatric", "obstetric", 
-                                     "regional", "cardiovascular", "neuroanesthesia")))
+sampled_trials <- readxl::read_excel(SAMPLE_COHORT_FILE)
 
-summary(extraction_log)  
+if (!("record_id" %in% names(sampled_trials))) {
+  stop(
+    paste(
+      "The cohort file does not contain a 'record_id' column:",
+      SAMPLE_COHORT_FILE,
+      "\nUse a cohort file that includes record_id (e.g., sample_list.xlsx)."
+    ),
+    call. = FALSE
+  )
+}
 
-ssampcalc(df=extraction_log, n=220, strata = group.f)
+# ---------------------------------------------------------------------
+# Freeze IDs (unique trial IDs)
+# ---------------------------------------------------------------------
+frozen_ids <- sampled_trials %>%
+  mutate(record_id = as.character(record_id)) %>%
+  filter(!is.na(record_id), record_id != "") %>%
+  distinct(record_id)
 
-sample <- ssamp(df=extraction_log, n=220, strata=group.f)
+n_ids <- nrow(frozen_ids)
+message("Frozen cohort loaded from: ", SAMPLE_COHORT_FILE)
+message("Number of unique record_id frozen: ", n_ids)
 
-install.packages("writexl")
+# ---------------------------------------------------------------------
+# Save frozen IDs to outputs/ for reproducibility
+# ---------------------------------------------------------------------
+write.csv(
+  frozen_ids,
+  file.path(DIR_OUTPUTS, "frozen_sample_ids_2026-02.csv"),
+  row.names = FALSE
+)
 
-library(writexl)
+saveRDS(
+  frozen_ids,
+  file.path(DIR_OUTPUTS, "frozen_sample_ids_2026-02.rds")
+)
 
-write_xlsx(sample, "~/Documents/Fragility Index project/Fragility/sample.xlsx")
+# Also save a small receipt for audit trail
+receipt <- data.frame(
+  cohort_file = SAMPLE_COHORT_FILE,
+  n_unique_record_id = n_ids,
+  created_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+)
 
-#########
-##Eligible trials distribution
-# Adults 421/639 65.9%.  // 58.9%
-# Pediatric 54/639 8.5% // 6.8%
-# Obstetric 68/639 10.6% // 13.7%
-# CV 41/639 6.4% // 7.8%
-# Regional 55/639 8.6% //12.8%
-# Other 0 
+writexl::write_xlsx(
+  list(
+    receipt = receipt,
+    frozen_ids = frozen_ids
+  ),
+  path = file.path(DIR_OUTPUTS, "frozen_sample_receipt_2026-02.xlsx")
+)
 
+# Make available to downstream scripts in this run
+assign("frozen_ids", frozen_ids, envir = .GlobalEnv)
 
+message("02_sample_size.R complete: frozen IDs saved to outputs/ and loaded as object 'frozen_ids'.")
