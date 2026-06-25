@@ -142,20 +142,17 @@ model_superiority <- model_superiority %>%
 # Note: rct_type.factor is removed because only superiority trials remain
 # ------------------------------------------------------------
 nb_superiority <- glm.nb(
-  fi_each ~ year_group +
-    c_participants.factor +
-    c_design_collapsed.factor +
-    i_type.factor +
-    rct_blind_d.factor +
-    rct_conceal_d.factor +
-    rct_centers.factor +
-    ethic.factor +
-    funding.factor +
-    d_share.factor +
-    pval_significance +
-    sample_size +
-    ltfu +
-    moved,
+  fi_each ~
+  c_participants.factor +
+  c_design_collapsed.factor +
+  i_type.factor +
+  rct_blind_d.factor +
+  rct_conceal_d.factor +
+  rct_centers.factor +
+  funding.factor +
+  d_share.factor +
+  sample_size +
+  ltfu
   data = model_superiority
 )
 
